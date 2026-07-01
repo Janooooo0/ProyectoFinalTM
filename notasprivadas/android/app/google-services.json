@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "871229108828",
+    "project_id": "notasprivadas-9eaa1",
+    "storage_bucket": "notasprivadas-9eaa1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:871229108828:android:c3aeb066de3a8e87b1ac99",
+        "android_client_info": {
+          "package_name": "com.example.notasprivadas"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD4whoJpWzzjHyPYQWNEPVy2l5BH-2UtYg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
