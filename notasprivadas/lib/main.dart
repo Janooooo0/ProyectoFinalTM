@@ -2,16 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
-import 'database_helper.dart';
 import 'draft_helper.dart';
+import 'services/api_service.dart';
 import 'package:intl/intl.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-  
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
   // Para mayor seguridad: Cerramos sesión al iniciar "frío"
   await FirebaseAuth.instance.signOut();
 
@@ -34,7 +32,9 @@ class MyApp extends StatelessWidget {
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
           }
           if (snapshot.hasData) {
             return const HomePage();
@@ -77,7 +77,7 @@ class _LoginPageState extends State<LoginPage> {
         } else if (e.code == 'invalid-email') {
           message = 'Email no válido';
         }
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(message), backgroundColor: Colors.red),
@@ -105,7 +105,10 @@ class _LoginPageState extends State<LoginPage> {
       } on FirebaseAuthException catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(e.message ?? 'Error al registrar'), backgroundColor: Colors.red),
+            SnackBar(
+              content: Text(e.message ?? 'Error al registrar'),
+              backgroundColor: Colors.red,
+            ),
           );
         }
       } finally {
@@ -126,7 +129,11 @@ class _LoginPageState extends State<LoginPage> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.lock_person_rounded, size: 100, color: Colors.deepPurple),
+                const Icon(
+                  Icons.lock_person_rounded,
+                  size: 100,
+                  color: Colors.deepPurple,
+                ),
                 const SizedBox(height: 32),
                 Text(
                   'Bienvenido',
@@ -145,7 +152,9 @@ class _LoginPageState extends State<LoginPage> {
                     prefixIcon: Icon(Icons.email_outlined),
                     border: OutlineInputBorder(),
                   ),
-                  validator: (value) => (value == null || value.isEmpty) ? 'Ingresa tu correo' : null,
+                  validator: (value) => (value == null || value.isEmpty)
+                      ? 'Ingresa tu correo'
+                      : null,
                 ),
                 const SizedBox(height: 16),
                 TextFormField(
@@ -155,12 +164,20 @@ class _LoginPageState extends State<LoginPage> {
                     labelText: 'Contraseña',
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
-                      icon: Icon(_isPasswordVisible ? Icons.visibility_off : Icons.visibility),
-                      onPressed: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+                      icon: Icon(
+                        _isPasswordVisible
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                      ),
+                      onPressed: () => setState(
+                        () => _isPasswordVisible = !_isPasswordVisible,
+                      ),
                     ),
                     border: const OutlineInputBorder(),
                   ),
-                  validator: (value) => (value == null || value.length < 6) ? 'Mínimo 6 caracteres' : null,
+                  validator: (value) => (value == null || value.length < 6)
+                      ? 'Mínimo 6 caracteres'
+                      : null,
                 ),
                 const SizedBox(height: 24),
                 if (_isLoading)
@@ -173,12 +190,17 @@ class _LoginPageState extends State<LoginPage> {
                       backgroundColor: Colors.deepPurple,
                       foregroundColor: Colors.white,
                     ),
-                    child: const Text('Iniciar Sesión', style: TextStyle(fontWeight: FontWeight.bold)),
+                    child: const Text(
+                      'Iniciar Sesión',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   OutlinedButton(
                     onPressed: _handleRegister,
-                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
                     child: const Text('Registrarse'),
                   ),
                 ],
@@ -206,10 +228,10 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final DatabaseHelper _dbHelper = DatabaseHelper();
+  final ApiService _apiService = ApiService();
   final DraftHelper _draftHelper = DraftHelper();
   final TextEditingController _searchController = TextEditingController();
-  
+
   int _currentIndex = 0;
   List<Map<String, dynamic>> _allNotes = [];
   List<Map<String, dynamic>> _filteredNotes = [];
@@ -244,23 +266,38 @@ class _HomePageState extends State<HomePage> {
     setState(() => _isLoading = true);
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      final notes = await _dbHelper.getNotes(user.uid);
-      final drafts = await _draftHelper.getAllDrafts();
-      if (mounted) {
-        setState(() {
-          _allNotes = notes;
-          _filteredNotes = notes;
-          _allDrafts = drafts;
-          _isLoading = false;
-          _onSearchChanged();
-        });
+      try {
+        final notesData = await _apiService.getNotes(user.uid);
+        final notes = List<Map<String, dynamic>>.from(notesData);
+        final drafts = await _draftHelper.getAllDrafts();
+        if (mounted) {
+          setState(() {
+            _allNotes = notes;
+            _filteredNotes = notes;
+            _allDrafts = drafts;
+            _isLoading = false;
+            _onSearchChanged();
+          });
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Error al cargar notas: $e')));
+        }
       }
     }
   }
 
-  void _showNoteDialog({Map<String, dynamic>? note, bool isDraft = false}) async {
+  void _showNoteDialog({
+    Map<String, dynamic>? note,
+    bool isDraft = false,
+  }) async {
     final titleController = TextEditingController(text: note?['title'] ?? '');
-    final contentController = TextEditingController(text: note?['content'] ?? '');
+    final contentController = TextEditingController(
+      text: note?['content'] ?? '',
+    );
     final bool isEditing = note != null && !isDraft;
     bool isPinned = note?['isPinned'] == 1;
 
@@ -269,123 +306,151 @@ class _HomePageState extends State<HomePage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (context) => StatefulBuilder(
-        builder: (context, setModalState) => Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(context).viewInsets.bottom,
-            left: 20,
-            right: 20,
-            top: 20,
+        builder: (context, setModalState) => Container(
+          decoration: BoxDecoration(
+            color: isPinned ? Colors.deepPurple[50] : Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    isEditing ? 'Editar Nota' : (isDraft ? 'Restaurar Borrador' : 'Nueva Nota'),
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                  Row(
-                    children: [
-                      IconButton(
-                        tooltip: 'Anclar',
-                        icon: Icon(
-                          isPinned ? Icons.push_pin : Icons.push_pin_outlined,
-                          color: isPinned ? Colors.deepPurple : Colors.grey,
-                        ),
-                        onPressed: () {
-                          setModalState(() => isPinned = !isPinned);
-                        },
-                      ),
-                      if (isEditing)
+          child: Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom,
+              left: 20,
+              right: 20,
+              top: 20,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      isEditing
+                          ? 'Editar Nota'
+                          : (isDraft ? 'Restaurar Borrador' : 'Nueva Nota'),
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    Row(
+                      children: [
                         IconButton(
-                          tooltip: 'Eliminar',
-                          icon: const Icon(Icons.delete_outline, color: Colors.red),
+                          tooltip: 'Anclar',
+                          icon: Icon(
+                            isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                            color: isPinned ? Colors.deepPurple : Colors.grey,
+                          ),
                           onPressed: () {
-                            Navigator.pop(context);
-                            _confirmDelete(note['id']);
+                            setModalState(() => isPinned = !isPinned);
                           },
                         ),
-                    ],
+                        if (isEditing)
+                          IconButton(
+                            tooltip: 'Eliminar',
+                            icon: const Icon(
+                              Icons.delete_outline,
+                              color: Colors.red,
+                            ),
+                            onPressed: () {
+                              Navigator.pop(context);
+                              _confirmDelete(note['id']);
+                            },
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: titleController,
+                  decoration: const InputDecoration(
+                    labelText: 'Título',
+                    border: OutlineInputBorder(),
                   ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: titleController,
-                decoration: const InputDecoration(labelText: 'Título', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: contentController,
-                maxLines: 8,
-                decoration: const InputDecoration(labelText: 'Contenido', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () async {
-                        await _draftHelper.saveDraft(
-                          titleController.text,
-                          contentController.text,
-                        );
-                        if (mounted) {
-                          Navigator.pop(context);
-                          _loadData();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Borrador guardado en .txt')),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: contentController,
+                  maxLines: 8,
+                  decoration: const InputDecoration(
+                    labelText: 'Contenido',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () async {
+                          await _draftHelper.saveDraft(
+                            titleController.text,
+                            contentController.text,
                           );
-                        }
-                      },
-                      child: const Text('Guardar Borrador'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () async {
-                        if (titleController.text.isNotEmpty || contentController.text.isNotEmpty) {
-                          final user = FirebaseAuth.instance.currentUser;
-                          if (user != null) {
-                            final noteData = {
-                              'userId': user.uid,
-                              'title': titleController.text,
-                              'content': contentController.text,
-                              'date': DateFormat('dd MMM').format(DateTime.now()),
-                              'isPinned': isPinned ? 1 : 0,
-                            };
-
-                            if (isEditing) {
-                              await _dbHelper.updateNote(note['id'], noteData);
-                            } else {
-                              await _dbHelper.insertNote(noteData);
-                              if (isDraft) {
-                                await _draftHelper.deleteDraft(note!['path']);
-                              }
-                            }
-                            
-                            if (mounted) Navigator.pop(context);
+                          if (mounted) {
+                            Navigator.pop(context);
                             _loadData();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Borrador guardado en .txt'),
+                              ),
+                            );
                           }
-                        }
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.deepPurple,
-                        foregroundColor: Colors.white,
+                        },
+                        child: const Text('Guardar Borrador'),
                       ),
-                      child: Text(isEditing ? 'Actualizar' : 'Guardar Nota'),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-            ],
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          if (titleController.text.isNotEmpty ||
+                              contentController.text.isNotEmpty) {
+                            final user = FirebaseAuth.instance.currentUser;
+                            if (user != null) {
+                              final noteData = {
+                                'userId': user.uid,
+                                'title': titleController.text,
+                                'content': contentController.text,
+                                'date': DateFormat(
+                                  'dd MMM',
+                                ).format(DateTime.now()),
+                                'isPinned': isPinned ? 1 : 0,
+                              };
+
+                              if (isEditing) {
+                                await _apiService.updateNote(
+                                  note['id'],
+                                  noteData,
+                                );
+                              } else {
+                                await _apiService.insertNote(noteData);
+                                if (isDraft) {
+                                  await _draftHelper.deleteDraft(note!['path']);
+                                }
+                              }
+
+                              if (mounted) Navigator.pop(context);
+                              _loadData();
+                            }
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.deepPurple,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: Text(isEditing ? 'Actualizar' : 'Guardar Nota'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+              ],
+            ),
           ),
         ),
       ),
@@ -393,18 +458,24 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _confirmDelete(int id) {
+    final user = FirebaseAuth.instance.currentUser;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('¿Eliminar nota?'),
         content: const Text('Esta acción no se puede deshacer.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
           TextButton(
             onPressed: () async {
-              await _dbHelper.deleteNote(id);
-              if (mounted) Navigator.pop(context);
-              _loadData();
+              if (user != null) {
+                await _apiService.deleteNote(id, user.uid);
+                if (mounted) Navigator.pop(context);
+                _loadData();
+              }
             },
             child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
           ),
@@ -420,7 +491,10 @@ class _HomePageState extends State<HomePage> {
         title: const Text('¿Eliminar borrador?'),
         content: const Text('Se eliminará el archivo .txt permanentemente.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
           TextButton(
             onPressed: () async {
               await _draftHelper.deleteDraft(path);
@@ -442,8 +516,8 @@ class _HomePageState extends State<HomePage> {
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
         title: Text(
-          _currentIndex == 0 ? 'Mis Notas' : 'Borradores (.txt)', 
-          style: const TextStyle(fontWeight: FontWeight.bold)
+          _currentIndex == 0 ? 'Mis Notas' : 'Borradores (.txt)',
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         elevation: 0,
         backgroundColor: Colors.white,
@@ -453,7 +527,10 @@ class _HomePageState extends State<HomePage> {
             backgroundColor: Colors.deepPurple[50],
             child: Text(
               user?.email?.substring(0, 1).toUpperCase() ?? 'U',
-              style: const TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.deepPurple,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
           const SizedBox(width: 8),
@@ -464,43 +541,54 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 8),
         ],
       ),
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator())
-        : Column(
-            children: [
-              if (_currentIndex == 0)
-                Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Buscar en tus notas...',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _searchController.text.isNotEmpty 
-                        ? IconButton(
-                            icon: const Icon(Icons.clear), 
-                            onPressed: () => _searchController.clear()
-                          ) 
-                        : null,
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(vertical: 0),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                if (_currentIndex == 0)
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: TextField(
+                      controller: _searchController,
+                      decoration: InputDecoration(
+                        hintText: 'Buscar en tus notas...',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _searchController.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear),
+                                onPressed: () => _searchController.clear(),
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: Colors.white,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                      ),
                     ),
                   ),
+                Expanded(
+                  child: _currentIndex == 0
+                      ? _buildNotesGrid()
+                      : _buildDraftsList(),
                 ),
-              Expanded(
-                child: _currentIndex == 0 ? _buildNotesGrid() : _buildDraftsList(),
-              ),
-            ],
-          ),
+              ],
+            ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),
         selectedItemColor: Colors.deepPurple,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.note_rounded), label: 'Notas'),
-          BottomNavigationBarItem(icon: Icon(Icons.drafts_rounded), label: 'Borradores'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.note_rounded),
+            label: 'Notas',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.drafts_rounded),
+            label: 'Borradores',
+          ),
         ],
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
@@ -520,14 +608,18 @@ class _HomePageState extends State<HomePage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              _searchController.text.isEmpty ? Icons.note_alt_outlined : Icons.search_off, 
-              size: 80, 
-              color: Colors.grey[300]
+              _searchController.text.isEmpty
+                  ? Icons.note_alt_outlined
+                  : Icons.search_off,
+              size: 80,
+              color: Colors.grey[300],
             ),
             const SizedBox(height: 16),
             Text(
-              _searchController.text.isEmpty ? 'No hay notas todavía' : 'No se encontraron resultados', 
-              style: TextStyle(color: Colors.grey[600], fontSize: 18)
+              _searchController.text.isEmpty
+                  ? 'No hay notas todavía'
+                  : 'No se encontraron resultados',
+              style: TextStyle(color: Colors.grey[600], fontSize: 18),
             ),
           ],
         ),
@@ -545,7 +637,7 @@ class _HomePageState extends State<HomePage> {
       itemBuilder: (context, index) {
         final note = _filteredNotes[index];
         final bool isPinned = note['isPinned'] == 1;
-        
+
         return GestureDetector(
           onTap: () => _showNoteDialog(note: note),
           onLongPress: () => _confirmDelete(note['id']),
@@ -554,11 +646,14 @@ class _HomePageState extends State<HomePage> {
             shadowColor: Colors.black12,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
-              side: isPinned 
-                ? BorderSide(color: Colors.deepPurple.withOpacity(0.3), width: 1)
-                : BorderSide.none,
+              side: isPinned
+                  ? BorderSide(
+                      color: Colors.deepPurple.withOpacity(0.3),
+                      width: 1,
+                    )
+                  : BorderSide.none,
             ),
-            color: Colors.white,
+            color: isPinned ? Colors.deepPurple : Colors.white,
             child: Padding(
               padding: const EdgeInsets.all(16.0),
               child: Column(
@@ -569,20 +664,31 @@ class _HomePageState extends State<HomePage> {
                       Expanded(
                         child: Text(
                           note['title'] ?? '',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: isPinned ? Colors.white : Colors.black,
+                          ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       if (isPinned)
-                        const Icon(Icons.push_pin, size: 16, color: Colors.deepPurple),
+                        const Icon(
+                          Icons.push_pin,
+                          size: 16,
+                          color: Colors.white,
+                        ),
                     ],
                   ),
                   const SizedBox(height: 8),
                   Expanded(
                     child: Text(
                       note['content'] ?? '',
-                      style: TextStyle(color: Colors.grey[700], fontSize: 14),
+                      style: TextStyle(
+                        color: isPinned ? Colors.white70 : Colors.grey[700],
+                        fontSize: 14,
+                      ),
                       maxLines: 4,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -590,7 +696,10 @@ class _HomePageState extends State<HomePage> {
                   const SizedBox(height: 8),
                   Text(
                     note['date'] ?? '',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                    style: TextStyle(
+                      color: isPinned ? Colors.white60 : Colors.grey[400],
+                      fontSize: 12,
+                    ),
                   ),
                 ],
               ),
@@ -609,7 +718,10 @@ class _HomePageState extends State<HomePage> {
           children: [
             Icon(Icons.drafts_outlined, size: 80, color: Colors.grey[300]),
             const SizedBox(height: 16),
-            Text('No hay borradores guardados', style: TextStyle(color: Colors.grey[600], fontSize: 18)),
+            Text(
+              'No hay borradores guardados',
+              style: TextStyle(color: Colors.grey[600], fontSize: 18),
+            ),
           ],
         ),
       );
@@ -622,9 +734,17 @@ class _HomePageState extends State<HomePage> {
         return Card(
           margin: const EdgeInsets.only(bottom: 12),
           child: ListTile(
-            leading: const CircleAvatar(child: Icon(Icons.description_outlined)),
-            title: Text(draft['title'].isEmpty ? '(Sin título)' : draft['title']),
-            subtitle: Text(draft['content'], maxLines: 1, overflow: TextOverflow.ellipsis),
+            leading: const CircleAvatar(
+              child: Icon(Icons.description_outlined),
+            ),
+            title: Text(
+              draft['title'].isEmpty ? '(Sin título)' : draft['title'],
+            ),
+            subtitle: Text(
+              draft['content'],
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             onTap: () => _showNoteDialog(note: draft, isDraft: true),
             trailing: IconButton(
               icon: const Icon(Icons.delete_outline, color: Colors.red),
