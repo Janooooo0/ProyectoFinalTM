@@ -1,13 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide User;
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 import 'firebase_options.dart';
-import 'database_helper.dart';
-import 'draft_helper.dart';
 import 'package:intl/intl.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Inicializamos Supabase
+  await Supabase.initialize(
+    url: 'https://erkbmehsbymitprwctxp.supabase.co',
+    anonKey: 'sb_publishable_uewrozpZ0MwPt_p7d9lbCQ_HNn4ucMl',
+  );
+
+  // Inicializamos Firebase
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
@@ -24,7 +34,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Notas Privadas',
+      title: 'Tareas Privadas',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
@@ -45,6 +55,7 @@ class MyApp extends StatelessWidget {
     );
   }
 }
+
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -206,21 +217,18 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  final DraftHelper _draftHelper = DraftHelper();
   final TextEditingController _searchController = TextEditingController();
+  final ImagePicker _picker = ImagePicker();
   
   int _currentIndex = 0;
-  List<Map<String, dynamic>> _allNotes = [];
-  List<Map<String, dynamic>> _filteredNotes = [];
-  List<Map<String, dynamic>> _allDrafts = [];
-  bool _isLoading = true;
+
+  // Variables para la Galería
+  String? _selectedFolderId;
+  String? _selectedFolderName;
 
   @override
   void initState() {
     super.initState();
-    _loadData();
-    _searchController.addListener(_onSearchChanged);
   }
 
   @override
@@ -229,40 +237,161 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  void _onSearchChanged() {
-    setState(() {
-      _filteredNotes = _allNotes.where((note) {
-        final title = note['title'].toString().toLowerCase();
-        final content = note['content'].toString().toLowerCase();
-        final query = _searchController.text.toLowerCase();
-        return title.contains(query) || content.contains(query);
-      }).toList();
-    });
+  Future<void> _createFolder() async {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Nueva Carpeta de Clase'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(hintText: 'Nombre de la clase (ej: Matemáticas)'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          TextButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty) {
+                try {
+                  final user = FirebaseAuth.instance.currentUser;
+                  await FirebaseFirestore.instance.collection('class_folders').add({
+                    'name': controller.text,
+                    'userId': user!.uid,
+                    'createdAt': FieldValue.serverTimestamp(),
+                  });
+                  if (mounted) Navigator.pop(context);
+                } catch (e) {
+                  print('Error al crear carpeta: $e');
+                }
+              }
+            },
+            child: const Text('Crear'),
+          ),
+        ],
+      ),
+    );
   }
 
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      final notes = await _dbHelper.getNotes(user.uid);
-      final drafts = await _draftHelper.getAllDrafts();
-      if (mounted) {
-        setState(() {
-          _allNotes = notes;
-          _filteredNotes = notes;
-          _allDrafts = drafts;
-          _isLoading = false;
-          _onSearchChanged();
-        });
-      }
-    }
+  Future<void> _uploadMedia(XFile media, String type) async {
+    final nameController = TextEditingController();
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Nombre de la ${type == 'image' ? 'Foto' : 'Video'}'),
+        content: TextField(
+          controller: nameController,
+          decoration: InputDecoration(hintText: 'Ej: ${type == 'image' ? 'Pizarra de hoy' : 'Explicación ejercicio'}'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          TextButton(
+            onPressed: () async {
+              if (nameController.text.isNotEmpty) {
+                final name = nameController.text;
+                Navigator.pop(context);
+                
+                try {
+                  final bytes = await media.readAsBytes();
+                  final fileExt = media.path.split('.').last;
+                  final fileName = '${DateTime.now().millisecondsSinceEpoch}.$fileExt';
+                  final filePath = '${FirebaseAuth.instance.currentUser!.uid}/$fileName';
+
+                  await Supabase.instance.client.storage
+                      .from('media')
+                      .uploadBinary(filePath, bytes);
+
+                  final url = Supabase.instance.client.storage
+                      .from('media')
+                      .getPublicUrl(filePath);
+
+                  await FirebaseFirestore.instance.collection('class_images').add({
+                    'folderId': _selectedFolderId,
+                    'userId': FirebaseAuth.instance.currentUser!.uid,
+                    'name': name,
+                    'url': url,
+                    'type': type,
+                    'createdAt': FieldValue.serverTimestamp(),
+                  });
+
+                } catch (e) {
+                  print('Error al guardar media: $e');
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error al subir media: $e')),
+                    );
+                  }
+                }
+              }
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
   }
 
-  void _showNoteDialog({Map<String, dynamic>? note, bool isDraft = false}) async {
-    final titleController = TextEditingController(text: note?['title'] ?? '');
-    final contentController = TextEditingController(text: note?['content'] ?? '');
-    final bool isEditing = note != null && !isDraft;
-    bool isPinned = note?['isPinned'] == 1;
+  Future<void> _takePhoto() async {
+    if (_selectedFolderId == null) return;
+    final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
+    if (photo != null) _uploadMedia(photo, 'image');
+  }
+
+  Future<void> _takeVideo() async {
+    if (_selectedFolderId == null) return;
+    final XFile? video = await _picker.pickVideo(source: ImageSource.camera);
+    if (video != null) _uploadMedia(video, 'video');
+  }
+
+  Future<void> _pickFromGallery() async {
+    if (_selectedFolderId == null) return;
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.image),
+            title: const Text('Imagen de Galería'),
+            onTap: () async {
+              Navigator.pop(context);
+              final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+              if (image != null) _uploadMedia(image, 'image');
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.video_library),
+            title: const Text('Video de Galería'),
+            onTap: () async {
+              Navigator.pop(context);
+              final XFile? video = await _picker.pickVideo(source: ImageSource.gallery);
+              if (video != null) _uploadMedia(video, 'video');
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTaskDialog({DocumentSnapshot? doc}) async {
+    final Map<String, dynamic>? data = doc != null ? doc.data() as Map<String, dynamic> : null;
+    
+    final titleController = TextEditingController(text: data?['title'] ?? '');
+    final contentController = TextEditingController(text: data?['content'] ?? '');
+    
+    DateTime selectedDate = data?['deadlineDate'] != null 
+        ? (data!['deadlineDate'] as Timestamp).toDate() 
+        : DateTime.now();
+        
+    TimeOfDay selectedTime = data?['deadlineTime'] != null 
+        ? TimeOfDay(
+            hour: int.parse(data!['deadlineTime'].split(':')[0]), 
+            minute: int.parse(data['deadlineTime'].split(':')[1]))
+        : TimeOfDay.now();
+
+    final bool isEditing = doc != null;
+    bool isPinned = data?['isPinned'] == 1 || data?['isPinned'] == true;
 
     if (!mounted) return;
 
@@ -286,7 +415,7 @@ class _HomePageState extends State<HomePage> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    isEditing ? 'Editar Nota' : (isDraft ? 'Restaurar Borrador' : 'Nueva Nota'),
+                    isEditing ? 'Editar Tarea' : 'Nueva Tarea',
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
                   ),
                   Row(
@@ -307,7 +436,7 @@ class _HomePageState extends State<HomePage> {
                           icon: const Icon(Icons.delete_outline, color: Colors.red),
                           onPressed: () {
                             Navigator.pop(context);
-                            _confirmDelete(note['id']);
+                            _confirmDelete(doc.id);
                           },
                         ),
                     ],
@@ -322,67 +451,85 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 12),
               TextField(
                 controller: contentController,
-                maxLines: 8,
+                maxLines: 5,
                 decoration: const InputDecoration(labelText: 'Contenido', border: OutlineInputBorder()),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton(
-                      onPressed: () async {
-                        await _draftHelper.saveDraft(
-                          titleController.text,
-                          contentController.text,
+                    child: ListTile(
+                      title: const Text('Fecha Límite'),
+                      subtitle: Text(DateFormat('dd/MM/yyyy').format(selectedDate)),
+                      leading: const Icon(Icons.calendar_today),
+                      onTap: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: selectedDate,
+                          firstDate: DateTime.now(),
+                          lastDate: DateTime(2100),
                         );
-                        if (mounted) {
-                          Navigator.pop(context);
-                          _loadData();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Borrador guardado en .txt')),
-                          );
+                        if (picked != null) {
+                          setModalState(() => selectedDate = picked);
                         }
                       },
-                      child: const Text('Guardar Borrador'),
                     ),
                   ),
-                  const SizedBox(width: 12),
                   Expanded(
-                    child: ElevatedButton(
-                      onPressed: () async {
-                        if (titleController.text.isNotEmpty || contentController.text.isNotEmpty) {
-                          final user = FirebaseAuth.instance.currentUser;
-                          if (user != null) {
-                            final noteData = {
-                              'userId': user.uid,
-                              'title': titleController.text,
-                              'content': contentController.text,
-                              'date': DateFormat('dd MMM').format(DateTime.now()),
-                              'isPinned': isPinned ? 1 : 0,
-                            };
-
-                            if (isEditing) {
-                              await _dbHelper.updateNote(note['id'], noteData);
-                            } else {
-                              await _dbHelper.insertNote(noteData);
-                              if (isDraft) {
-                                await _draftHelper.deleteDraft(note!['path']);
-                              }
-                            }
-                            
-                            if (mounted) Navigator.pop(context);
-                            _loadData();
-                          }
+                    child: ListTile(
+                      title: const Text('Hora Límite'),
+                      subtitle: Text(selectedTime.format(context)),
+                      leading: const Icon(Icons.access_time),
+                      onTap: () async {
+                        final picked = await showTimePicker(
+                          context: context,
+                          initialTime: selectedTime,
+                        );
+                        if (picked != null) {
+                          setModalState(() => selectedTime = picked);
                         }
                       },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.deepPurple,
-                        foregroundColor: Colors.white,
-                      ),
-                      child: Text(isEditing ? 'Actualizar' : 'Guardar Nota'),
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () async {
+                  if (titleController.text.isNotEmpty) {
+                    final user = FirebaseAuth.instance.currentUser;
+                    if (user != null) {
+                      final taskData = {
+                        'userId': user.uid,
+                        'title': titleController.text,
+                        'content': contentController.text,
+                        'createdAt': FieldValue.serverTimestamp(),
+                        'deadlineDate': Timestamp.fromDate(selectedDate),
+                        'deadlineTime': '${selectedTime.hour}:${selectedTime.minute}',
+                        'isPinned': isPinned,
+                      };
+
+                      if (isEditing) {
+                        await FirebaseFirestore.instance
+                            .collection('tasks')
+                            .doc(doc.id)
+                            .update(taskData);
+                      } else {
+                        await FirebaseFirestore.instance
+                            .collection('tasks')
+                            .add(taskData);
+                      }
+                      
+                      if (mounted) Navigator.pop(context);
+                    }
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                child: Text(isEditing ? 'Actualizar' : 'Guardar'),
               ),
               const SizedBox(height: 20),
             ],
@@ -392,19 +539,18 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _confirmDelete(int id) {
+  void _confirmDelete(String id) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('¿Eliminar nota?'),
+        title: const Text('¿Eliminar tarea?'),
         content: const Text('Esta acción no se puede deshacer.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
           TextButton(
             onPressed: () async {
-              await _dbHelper.deleteNote(id);
+              await FirebaseFirestore.instance.collection('tasks').doc(id).delete();
               if (mounted) Navigator.pop(context);
-              _loadData();
             },
             child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
           ),
@@ -413,26 +559,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _confirmDeleteDraft(String path) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('¿Eliminar borrador?'),
-        content: const Text('Se eliminará el archivo .txt permanentemente.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-          TextButton(
-            onPressed: () async {
-              await _draftHelper.deleteDraft(path);
-              if (mounted) Navigator.pop(context);
-              _loadData();
-            },
-            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -442,13 +568,21 @@ class _HomePageState extends State<HomePage> {
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
         title: Text(
-          _currentIndex == 0 ? 'Mis Notas' : 'Borradores (.txt)', 
+          _currentIndex == 0 ? 'Mis Tareas' : 'Galería de Clases', 
           style: const TextStyle(fontWeight: FontWeight.bold)
         ),
         elevation: 0,
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         actions: [
+          if (_selectedFolderId != null && _currentIndex == 1)
+            IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => setState(() {
+                _selectedFolderId = null;
+                _selectedFolderName = null;
+              }),
+            ),
           CircleAvatar(
             backgroundColor: Colors.deepPurple[50],
             child: Text(
@@ -464,175 +598,370 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 8),
         ],
       ),
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator())
-        : Column(
-            children: [
-              if (_currentIndex == 0)
-                Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Buscar en tus notas...',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _searchController.text.isNotEmpty 
-                        ? IconButton(
-                            icon: const Icon(Icons.clear), 
-                            onPressed: () => _searchController.clear()
-                          ) 
-                        : null,
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                    ),
-                  ),
+      body: Column(
+        children: [
+          if (_currentIndex == 0 || (_currentIndex == 2 && _selectedFolderId != null))
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: TextField(
+                controller: _searchController,
+                onChanged: (value) => setState(() {}),
+                decoration: InputDecoration(
+                  hintText: _currentIndex == 0 ? 'Buscar en tus tareas...' : 'Buscar fotos en esta carpeta...',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _searchController.text.isNotEmpty 
+                    ? IconButton(
+                        icon: const Icon(Icons.clear), 
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() {});
+                        }
+                      ) 
+                    : null,
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 0),
                 ),
-              Expanded(
-                child: _currentIndex == 0 ? _buildNotesGrid() : _buildDraftsList(),
               ),
-            ],
+            ),
+          Expanded(
+            child: _buildBody(user!.uid),
           ),
+        ],
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
+        onTap: (index) {
+          setState(() {
+            _currentIndex = index;
+            _selectedFolderId = null; 
+          });
+        },
         selectedItemColor: Colors.deepPurple,
+        type: BottomNavigationBarType.fixed,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.note_rounded), label: 'Notas'),
-          BottomNavigationBarItem(icon: Icon(Icons.drafts_rounded), label: 'Borradores'),
+          BottomNavigationBarItem(icon: Icon(Icons.task_alt_rounded), label: 'Tareas'),
+          BottomNavigationBarItem(icon: Icon(Icons.collections_rounded), label: 'Galería'),
         ],
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showNoteDialog(),
+        onPressed: () {
+          if (_currentIndex == 1) {
+            if (_selectedFolderId == null) {
+              _createFolder();
+            } else {
+              showModalBottomSheet(
+                context: context,
+                builder: (context) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.camera_alt),
+                      title: const Text('Tomar Foto'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _takePhoto();
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.videocam),
+                      title: const Text('Grabar Video'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _takeVideo();
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.photo_library),
+                      title: const Text('Seleccionar de Galería'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickFromGallery();
+                      },
+                    ),
+                  ],
+                ),
+              );
+            }
+          } else {
+            _showTaskDialog();
+          }
+        },
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
-        child: const Icon(Icons.add),
+        child: Icon(_currentIndex == 1 && _selectedFolderId != null ? Icons.add_a_photo : Icons.add),
       ),
     );
   }
 
-  Widget _buildNotesGrid() {
-    if (_filteredNotes.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              _searchController.text.isEmpty ? Icons.note_alt_outlined : Icons.search_off, 
-              size: 80, 
-              color: Colors.grey[300]
-            ),
-            const SizedBox(height: 16),
-            Text(
-              _searchController.text.isEmpty ? 'No hay notas todavía' : 'No se encontraron resultados', 
-              style: TextStyle(color: Colors.grey[600], fontSize: 18)
-            ),
-          ],
-        ),
-      );
+  Widget _buildBody(String uid) {
+    switch (_currentIndex) {
+      case 0:
+        return _buildTasksGrid(uid);
+      case 1:
+        return _selectedFolderId == null ? _buildFoldersGrid(uid) : _buildImagesGrid(uid);
+      default:
+        return Container();
     }
-    return GridView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
-        childAspectRatio: 0.85,
-      ),
-      itemCount: _filteredNotes.length,
-      itemBuilder: (context, index) {
-        final note = _filteredNotes[index];
-        final bool isPinned = note['isPinned'] == 1;
+  }
+
+  Widget _buildFoldersGrid(String uid) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('class_folders')
+          .where('userId', isEqualTo: uid)
+          .orderBy('createdAt', descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+        final folders = snapshot.data?.docs ?? [];
         
-        return GestureDetector(
-          onTap: () => _showNoteDialog(note: note),
-          onLongPress: () => _confirmDelete(note['id']),
-          child: Card(
-            elevation: isPinned ? 4 : 2,
-            shadowColor: Colors.black12,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: isPinned 
-                ? BorderSide(color: Colors.deepPurple.withOpacity(0.3), width: 1)
-                : BorderSide.none,
+        if (folders.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.folder_open_outlined, size: 80, color: Colors.grey[300]),
+                const SizedBox(height: 16),
+                const Text('Crea una carpeta para tus clases', style: TextStyle(color: Colors.grey, fontSize: 18)),
+              ],
             ),
-            color: Colors.white,
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+          );
+        }
+        return GridView.builder(
+          padding: const EdgeInsets.all(16),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 16,
+            mainAxisSpacing: 16,
+          ),
+          itemCount: folders.length,
+          itemBuilder: (context, index) {
+            final folder = folders[index];
+            final data = folder.data() as Map<String, dynamic>;
+            return InkWell(
+              onTap: () {
+                setState(() {
+                  _selectedFolderId = folder.id;
+                  _selectedFolderName = data['name'];
+                });
+              },
+              child: Card(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.folder, size: 60, color: Colors.amber),
+                    const SizedBox(height: 8),
+                    Text(data['name'], style: const TextStyle(fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildImagesGrid(String uid) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('class_images')
+          .where('folderId', isEqualTo: _selectedFolderId)
+          .orderBy('createdAt', descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+        
+        final allImages = snapshot.data?.docs ?? [];
+        final filteredImages = allImages.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final name = data['name'].toString().toLowerCase();
+          final query = _searchController.text.toLowerCase();
+          return name.contains(query);
+        }).toList();
+
+        if (filteredImages.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.photo_library_outlined, size: 80, color: Colors.grey[300]),
+                const SizedBox(height: 16),
+                Text(_searchController.text.isEmpty ? 'No hay fotos en "$_selectedFolderName"' : 'No se encontraron fotos', style: const TextStyle(color: Colors.grey, fontSize: 18)),
+              ],
+            ),
+          );
+        }
+
+        return GridView.builder(
+          padding: const EdgeInsets.all(16),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: filteredImages.length,
+          itemBuilder: (context, index) {
+            final item = filteredImages[index];
+            final data = item.data() as Map<String, dynamic>;
+            final bool isVideo = data['type'] == 'video';
+            final String url = data['url'] ?? data['imageUrl'] ?? '';
+
+            return Column(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        isVideo 
+                          ? Container(color: Colors.black12, child: const Icon(Icons.play_circle_fill, size: 40, color: Colors.white70))
+                          : Image.network(url, fit: BoxFit.cover, errorBuilder: (c, e, s) => const Icon(Icons.broken_image)),
+                        if (isVideo)
+                          const Positioned(
+                            bottom: 4,
+                            right: 4,
+                            child: Icon(Icons.videocam, size: 16, color: Colors.white),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                Text(data['name'], style: const TextStyle(fontSize: 10), maxLines: 1, overflow: TextOverflow.ellipsis),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildTasksGrid(String uid) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('tasks')
+          .where('userId', isEqualTo: uid)
+          .orderBy('isPinned', descending: true)
+          .orderBy('createdAt', descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return Center(child: Text('Error: ${snapshot.error}'));
+        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+
+        final docs = snapshot.data!.docs.where((doc) {
+          final title = doc['title'].toString().toLowerCase();
+          final content = doc['content'].toString().toLowerCase();
+          final query = _searchController.text.toLowerCase();
+          return title.contains(query) || content.contains(query);
+        }).toList();
+
+        if (docs.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  _searchController.text.isNotEmpty ? Icons.search_off : Icons.task_outlined, 
+                  size: 80, 
+                  color: Colors.grey[300]
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  _searchController.text.isNotEmpty ? 'No se encontraron resultados' : 'No hay tareas todavía',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 18)
+                ),
+              ],
+            ),
+          );
+        }
+
+        return GridView.builder(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            childAspectRatio: 0.8,
+          ),
+          itemCount: docs.length,
+          itemBuilder: (context, index) {
+            final doc = docs[index];
+            final data = doc.data() as Map<String, dynamic>;
+            final bool isPinned = data['isPinned'] == true;
+            
+            final DateTime deadline = (data['deadlineDate'] as Timestamp).toDate();
+            final String deadlineStr = DateFormat('dd MMM').format(deadline);
+            final String timeStr = data['deadlineTime'] ?? '';
+
+            return GestureDetector(
+              onTap: () => _showTaskDialog(doc: doc),
+              onLongPress: () => _confirmDelete(doc.id),
+              child: Card(
+                elevation: isPinned ? 4 : 2,
+                shadowColor: Colors.black12,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: isPinned 
+                    ? BorderSide(color: Colors.deepPurple.withOpacity(0.3), width: 1)
+                    : BorderSide.none,
+                ),
+                color: Colors.white,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              data['title'] ?? '',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (isPinned)
+                            const Icon(Icons.push_pin, size: 16, color: Colors.deepPurple),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
                       Expanded(
                         child: Text(
-                          note['title'] ?? '',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                          maxLines: 1,
+                          data['content'] ?? '',
+                          style: TextStyle(color: Colors.grey[700], fontSize: 14),
+                          maxLines: 3,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (isPinned)
-                        const Icon(Icons.push_pin, size: 16, color: Colors.deepPurple),
+                      const Divider(),
+                      Row(
+                        children: [
+                          const Icon(Icons.event, size: 14, color: Colors.deepPurple),
+                          const SizedBox(width: 4),
+                          Text(deadlineStr, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.access_time, size: 14, color: Colors.orange),
+                          const SizedBox(width: 4),
+                          Text(timeStr, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                        ],
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: Text(
-                      note['content'] ?? '',
-                      style: TextStyle(color: Colors.grey[700], fontSize: 14),
-                      maxLines: 4,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    note['date'] ?? '',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );
   }
 
-  Widget _buildDraftsList() {
-    if (_allDrafts.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.drafts_outlined, size: 80, color: Colors.grey[300]),
-            const SizedBox(height: 16),
-            Text('No hay borradores guardados', style: TextStyle(color: Colors.grey[600], fontSize: 18)),
-          ],
-        ),
-      );
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _allDrafts.length,
-      itemBuilder: (context, index) {
-        final draft = _allDrafts[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: ListTile(
-            leading: const CircleAvatar(child: Icon(Icons.description_outlined)),
-            title: Text(draft['title'].isEmpty ? '(Sin título)' : draft['title']),
-            subtitle: Text(draft['content'], maxLines: 1, overflow: TextOverflow.ellipsis),
-            onTap: () => _showNoteDialog(note: draft, isDraft: true),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline, color: Colors.red),
-              onPressed: () => _confirmDeleteDraft(draft['path']),
-            ),
-          ),
-        );
-      },
-    );
-  }
 }
